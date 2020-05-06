@@ -11,7 +11,7 @@ class ArticleGenerator():
     def __init__(self, model_dict, stopwords, model_name = 'glove', strat = 'keywords', 
                       label = None, postype =None, closest = 1, 
                       article_percent= 1,
-                      word_percent = 1, num_copies=1):
+                      word_percent = 1, num_copies=1, bert_superdict = {}):
         """
     
         :params:
@@ -49,6 +49,8 @@ class ArticleGenerator():
         self.num_copies = num_copies
         self.model = self.model_dict[self.model_name]
         self.stopwords = stopwords
+        self.bert_superdict = bert_superdict
+        
         
 
 
@@ -182,7 +184,7 @@ class ArticleGenerator():
                 pos = nltk.pos_tag([word])[0][1]
                 if pos in pos_shortcuts:
                     pos = pos_shortcuts[pos]
-                if label not in labeltype and pos not in wordtypes:
+                if label not in labeltype and pos not in wordtypes and word not in self.stopwords:
                     words[word] = i
         return words
 
@@ -221,30 +223,75 @@ class ArticleGenerator():
         return changedict
 
 
-    def get_bert_changes(self, words, article):
-        """
-        Creates a dict object to be later used for synonimization with Bert.
-        :params:
-            words, dict of strings:ints -- words that are to be changed and
-            indices of sentences
+    #def get_bert_changes(self, words, article):
+    #    """
+    #    Creates a dict object to be later used for synonimization with Bert.
+    #    :params:
+    #        words, dict of strings:ints -- words that are to be changed and
+    #        indices of sentences
+    #
+    #    :returns:
+    #        changedict, dict, words (str): synonimns (str) -- dictionary to be used 
+    #        for synonimization
+    #    """
+    #    changedict = {}
+    #    closest_array = list(np.random.choice(np.array([self.closest, self.closest + 1, 
+    #                                                    self.closest + 2]), size = int(len(words))))
+    #    for pair, closest in zip(words.items(), closest_array):
+    #        word, index = pair
+    #        sentence = article[index]
+    #        clear_sentence = list([comb.split()[0] for comb in sentence])
+    #        raw_sentence = list([b.lower()+ ' ' if b.lower()!= word else '__'+b.lower()+'__ ' for b in clear_sentence])
+    #        text_sentence = "".join(raw_sentence)
+    #        #print('Step1')
+    #        #print(word)
+    #        #print(text_sentence)
+    #        try:
+    #            synonyms = self.model(text_sentence)
+    #            #print('Step 2')
+    #            #print(synonyms)
+    #            for i in range(closest, closest+3):
+    #                alt = synonyms[i][0]
+    #                alt = alt.lower()
+    #                if not alt.isalnum() or alt in self.stopwords:
+    #                    if i == closest+2:
+    #                        alt = word
+    #                    else:
+    #                        continue
+    #                else:
+    #                    break
+    #                    
+    #        except:
+    #            alt = word
+    #        #print('Step 3')
+    #        #print(alt)
+    #        changedict[word] = alt
+    #    
+    #    
+    #    self.bert_changedict = changedict
+    #    
+    #    
+    #    return changedict
 
-        :returns:
-            changedict, dict, words (str): synonimns (str) -- dictionary to be used 
-            for synonimization
-        """
-        changedict = {}
-        closest_array = list(np.random.choice(np.array([self.closest, self.closest + 1, 
-                                                        self.closest + 2, self.closest + 3]), size = int(len(words))))
-        for pair, closest in zip(words.items(), closest_array):
-            word, index = pair
-            sentence = article[index]
-            clear_sentence = list([comb.split()[0] for comb in sentence])
-            raw_sentence = list([b.lower()+ ' ' if b!= word else '__'+b.lower()+'__  ' for b in clear_sentence])
-            text_sentence = " ".join(raw_sentence)
-            alt = self.model(text_sentence)[closest][0]
-            
-            changedict[word] = alt
-        return changedict
+    def get_bert_superdict(self, dataset):
+        for i in range(len(dataset)):
+            self.bert_superdict[i] = {}
+            article = dataset[i]
+            for j in range(len(article)):
+                self.bert_superdict[i][j] = {}
+                sentence = article[j]
+                clear_sentence = list([comb.split()[0] for comb in sentence])
+                for comb in sentence:
+                    word, label = comb.split()
+                    word = word.lower()
+                    if word.isalnum() and word not in self.stopwords:
+                        raw_sentence = list([b.lower()+ ' ' if b.lower()!= word else '__'+b.lower()+'__ ' for b in clear_sentence])
+                        text_sentence = "".join(raw_sentence)
+                        synonyms = self.model(text_sentence)
+                        synonyms = list([pair[0].lower() for pair in synonyms])
+                        synonyms += [word]
+                        self.bert_superdict[i][j][word] = synonyms[:7]
+
 
 
     def synonimize(self, article, changedict):
@@ -303,6 +350,72 @@ class ArticleGenerator():
         return synonimized_article
 
 
+    def synonimize_sentence(self, sentence, changedict):
+        """
+        Transform the sentence according to the previously constructed dictionary.
+        :params:
+            sentence, a list of strings 
+
+            chagedict, dict, words (str) : synonyms (str) -- dictionary to be used for
+            synonimization
+            
+        :returns:
+            synonimized_sentenc, list of strings
+
+        """
+        labeltype = set()
+        if self.label is not None:
+            if self.label == 'neutral':
+                labeltype.add('B-SPAN')
+                labeltype.add('I-SPAN')
+            elif self.label == 'propaganda':
+                labeltype.add('0')
+            
+        #additional variable that holds parts of speech that would NOT be changed
+        pos_shortcuts = {
+        'NN': 'n',
+        'JJ': 'adj',
+        'RB': 'adv',
+        'VB': 'v'
+        }
+        wordtypes = set(self.postype)
+        if self.postype is not None:
+            wordtypes = {'n', 'adj', 'adv', 'v'}
+            for fig in self.postype:
+                wordtypes.discard(fig)
+        
+        
+        synonimized_sentence = []
+        for comb in sentence:
+            word, label = comb.split()
+            word = word.lower()
+            pos = nltk.pos_tag([word])[0][1]
+            if pos in pos_shortcuts:
+                pos = pos_shortcuts[pos]
+            trigger = np.random.binomial(1,self.word_percent)
+            changetrigger = 0
+            if word in changedict and label not in labeltype and pos not in wordtypes and word not in self.stopwords and trigger == 1:
+                synonyms = changedict[word]
+                np.random.shuffle(synonyms)
+                for syn in synonyms:
+                    new_word = syn
+                    if not syn.isalnum() or syn in self.stopwords:
+                        continue
+                    else:
+                        changetrigger = 1
+                        break
+                if changetrigger == 0:
+                    new_word = word
+
+            else:
+                new_word = word
+            new_comb = new_word + " " + label
+            synonimized_sentence.append(new_comb)
+        
+        return synonimized_sentence
+
+
+
 
     def transform_article(self, article):
         """
@@ -329,30 +442,7 @@ class ArticleGenerator():
         """
         :params:
             dataset, list of articles, articles are list of sentences, 
-            sentences are lists of strings
-            
-            model_dict, dict with embedding models
-            
-            model_name, str, values = 'glove', 'word2vec', 'fasttext'
-            
-            strat: str, values are "keywords", "all" -- strategy of synonimizing, 
-            rather to choose keywords or all words respectively
-            
-            label, str or NoneType, values = 'neutral', 'propaganda', None if choose all
-            
-            postype, list of strings or NoneType, 
-            values = 'adj', 'adv', 'v', 'n' -- preferred parts of speech to be 
-            included in the synonimization, None for all types
-            Example: speechpart = ['adj', 'v', 'adv']
-            
-            closest, int -- closeness of a synonym to find, the bigger the less similar.
-            
-            article_percent, int 0 < x <=1 -- percentage of articles to transform
-            
-            word_percent, int 0 < x <= 1 -- percentage of words to change
-            
-            word_replace, bool -- calculate word_percent randomly with or without replacement,
-                            only relevant when word_percent < 1    
+            sentences are lists of strings   
         """        
 
         #производим замену
@@ -365,4 +455,31 @@ class ArticleGenerator():
         dataset_expanded = dataset + dataset_new
     
         return dataset_expanded
+
+
+    def transform_dataset_bert(self, dataset):
+        """
+        :params:
+            dataset, list of articles, articles are list of sentences, 
+            sentences are lists of strings   
+        """      
+        dataset_new = []  
+        for num_copy in range(self.num_copies):
+            for i in range(len(dataset)):
+                article = dataset[i]
+                new_article = []
+                for j in range(len(article)):
+                    sentence = article[j]
+                    changedict = self.bert_superdict[i][j]
+                    new_sentence = self.synonimize_sentence(sentence=sentence, changedict=changedict)
+                    new_article.append(new_sentence)
+                dataset_new.append(new_article)
+        dataset_expanded = dataset + dataset_new
+
+        return dataset_expanded
+
+
+
+        
+
 
